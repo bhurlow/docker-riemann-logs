@@ -23,7 +23,8 @@
     "debug": "^2.2.0",
     "dockerode": "^2.2.9",
     "event-stream": "^3.3.2",
-    "lodash": "^4.5.1"
+    "lodash": "^4.5.1",
+    "riemann": "^1.0.1"
   },
   "devDependencies": {
     "tape": "^4.4.0"

@@ -8,7 +8,7 @@ var _ = require('lodash')
 var spawn = require('child_process').spawn
 var docker = new Docker({socketPath: '/var/run/docker.sock'})
 var debug = require('debug')
-var info = debug('scepter:info')
+var info = debug('gazette:info')
 
 var logfiles = {}
 var streams = []
