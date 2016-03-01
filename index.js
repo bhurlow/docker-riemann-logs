@@ -27,7 +27,7 @@ function ignoreList() {
 
 function tail(path) {
   let s = spawn('tail',['-n', '10', '-f', path]);
-  s.stderr.on('data', (chunk) => console.log(chunk.toString()))
+  s.stderr.on('data', (chunk) => console.error(chunk.toString()))
   return s.stdout
 }
 
@@ -60,7 +60,6 @@ function handleLogFile(id, name, logpath) {
 // avoid an infinite logging loop
 function filterContainers(containers) {
   let ignore = ignoreList()
-  console.log("I AM GOING TO IGNORE", ignore)
   return containers
     .filter(x => x.Image != 'bhurlow/gazette')
     .filter(x => !_.includes(ignore, x.Image))
@@ -70,7 +69,6 @@ function streamLogs(docker) {
   docker.listContainers(function(err, res) {
     if (err) throw err;
     filterContainers(res).forEach((info) => {
-      console.log(info)
       let container = docker.getContainer(info.Id)
       container.inspect(function(err, data) {
         if (err) throw err;
@@ -133,11 +131,13 @@ function ensureVars() {
 
 function init() {
   info('Hi! getting started')
-  ensureVars()
+
+  // actually don't require these anymore
+  // ensureVars()
 
   client = riemann.createClient({
-    host: 'riemann',
-    port: 5555
+    host: process.env.RIEMANN_HOST || 'riemann',
+    port: process.env.RIEMANN_PORT ||  5555
   })
 
   client.on('connect', function() {
