@@ -1,25 +1,29 @@
 'use strict'
 
-var fs = require('fs')
-var es = require('event-stream')
-var Docker = require('dockerode')
-var url = require('url')
-var _ = require('lodash')
-var spawn = require('child_process').spawn
-var docker = new Docker({socketPath: '/var/run/docker.sock'})
-var debug = require('debug')
-var info = debug('gazette:info')
+const assert = require('assert');
+const fs = require('fs')
+const es = require('event-stream')
+const Docker = require('dockerode')
+const url = require('url')
+const _ = require('lodash')
+const spawn = require('child_process').spawn
+const debug = require('debug')
+const info = debug('gazette:info')
+const riemann = require('riemann')
 
-var logfiles = {}
+
+var client;
+
+// need for cleanup purposes
 var streams = []
-var notifyFn = function() {}
 
-// if a conatiner is created or dies
-// Object.observe(logfiles, onFileChange)
-
-// function onFileChange(changes) {
-//   console.log('STATE CHANGE')
-// }
+function ignoreList() {
+  let ignore = process.env.IGNORE_LOGS_FROM
+  if (ignore) {
+    return ignore.split(',')
+  }
+  else return []
+}
 
 function tail(path) {
   let s = spawn('tail',['-n', '10', '-f', path]);
@@ -27,18 +31,20 @@ function tail(path) {
   return s.stdout
 }
 
-function isStdout(obj) {
-  return obj.stream === "stderr"
-}
-
-function notify(event) {
-  console.log(event)
-  // info(event.name, event.log)
-  // notifyFn(event)
+function sendToRiemann(event) {
+  let riemannEvent = client.Event({
+    description: event.log,
+    host: event.id,
+    state: 'log',
+    service: event.name, 
+    tags: [event.stream],
+    time: event.time
+  })
+  client.send(riemannEvent, client.tcp)
 }
 
 function handleLogFile(id, name, logpath) {
-  info('streaming stderr for', name)
+  info('streaming logs for', name)
   let stream = tail(logpath)
     .pipe(es.split())
     .pipe(es.parse())
@@ -48,24 +54,23 @@ function handleLogFile(id, name, logpath) {
       cb(null, x)
     }))
     streams.push(stream)
-    stream.on('data', notify)
+    stream.on('data', sendToRiemann)
 }
 
 // avoid an infinite logging loop
 function filterContainers(containers) {
+  let ignore = ignoreList()
+  console.log("I AM GOING TO IGNORE", ignore)
   return containers
-    .filter(x => x.Image != 'bhurlow/docker-riemann-logs')
+    .filter(x => x.Image != 'bhurlow/gazette')
+    .filter(x => !_.includes(ignore, x.Image))
 }
 
-// on boot, 
-// determine which log files to follow
-// (this might change throughout container lifecycle)
-//
-// TODO: this must ignore logs from self!
-function streamLogs() {
+function streamLogs(docker) {
   docker.listContainers(function(err, res) {
     if (err) throw err;
     filterContainers(res).forEach((info) => {
+      console.log(info)
       let container = docker.getContainer(info.Id)
       container.inspect(function(err, data) {
         if (err) throw err;
@@ -78,26 +83,26 @@ function streamLogs() {
   })
 }
 
-function cleanup() {
+function cleanup(docker) {
   info('cleaning streams....')
   streams.map(x => x.destroy())
   info('streams all closed')
   streams = []
   info('resetting stream targets')
-  streamLogs()
+  streamLogs(docker)
 }
 
-function handleNewContainer(id) {
+function handleNewContainer(docker, id) {
   info('new container detected', id)
-  cleanup()
+  cleanup(docker)
 }
 
-function handleContainerDie(id) {
+function handleContainerDie(docker, id) {
   info('container die event detected', id)
-  cleanup()
+  cleanup(docker)
 }
 
-function watchDockerEvents() {
+function watchDockerEvents(docker) {
   docker.getEvents(function(err, stream) {
     stream.on('data', function(chunk) {
       let event = JSON.parse(chunk.toString())
@@ -107,26 +112,53 @@ function watchDockerEvents() {
       if (!id) return console.log('no id in event')
       switch (status) {
         case 'die':
-          handleContainerDie(id)
+          handleContainerDie(docker, id)
           break;
         case 'start':
-          handleNewContainer(id)
+          handleNewContainer(docker, id)
           break;
       }
     })
   })
 }
 
+// maybe provide defaults?
 function ensureVars() {
-  throw new Error('yo')
+  let host = process.env.RIEMANN_HOST
+  let port = process.env.RIEMANN_PORT
+  if (!host || !port) {
+    throw new Error('Must Specify RIEMANN_HOST RIEMANN_PORT')
+  }
 }
 
 function init() {
   info('Hi! getting started')
   ensureVars()
-  streamLogs()
-  watchDockerEvents()
+
+  client = riemann.createClient({
+    host: 'riemann',
+    port: 5555
+  })
+
+  client.on('connect', function() {
+    info('connected to riemann')
+  })
+
+  client.on('data', function(ack) {
+    if (!ack.ok) {
+      console.error(ack)
+      throw new Error('Backpressure detected, aborting')
+    }
+  })
+
+  info('connecting to docker...')
+  let docker = new Docker({socketPath: '/var/run/docker.sock'})
+
+  info('starting log stream')
+  streamLogs(docker)
+  watchDockerEvents(docker)
 }
+
 init()
 
 
